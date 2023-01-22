@@ -1,11 +1,15 @@
 package main
 
 import (
-	"bufio"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptoRand "crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"math/rand"
-	"os"
 	"strings"
 	"time"
 )
@@ -17,17 +21,18 @@ const (
 )
 
 type Block struct {
-	ID           uint
-	Timestamp    time.Time
-	MagicNumber  int32
-	PreviousHash string
-	Hash         string
-	Data         []string
-	BuildTime    int64
-	Miner        uint
+	ID                  uint
+	Timestamp           time.Time
+	MagicNumber         int32
+	PreviousHash        string
+	Hash                string
+	Transactions        []Transaction
+	PendingTransactions []Transaction
+	BuildTime           int64
+	Miner               uint
 }
 
-func (b *Block) Print(nState string) {
+func (b *Block) Print(bc *Blockchain, nState string) {
 	fmt.Printf("\nBlock:\n")
 	fmt.Printf("Created by miner #%d\n", b.Miner)
 	fmt.Printf("Id: %d\n", b.ID)
@@ -37,45 +42,36 @@ func (b *Block) Print(nState string) {
 	fmt.Printf("Hash of the block:\n%s\n", b.Hash)
 
 	if b.ID == 1 {
-		fmt.Printf("Block data: no messages\n")
+		fmt.Printf("Block data: No transactions\n")
 		fmt.Printf("Block was generating for %d seconds\n", b.BuildTime)
 		fmt.Printf("%s\n", nState)
 
-		b.GetBlockData()
+		// After printing the first block, ask the user if it wants to add transactions:
+		b.GetTransactionData(bc)
 	} else {
 		fmt.Printf("Block data:\n")
-		if len(b.Data) == 0 {
-			fmt.Printf("no messages\n")
+		if len(b.Transactions) == 0 {
+			fmt.Printf("No transactions\n")
 		} else {
-			data := strings.Join(b.Data, "\n")
-			if data != "" {
-				fmt.Printf("%s\n", data)
-				fmt.Printf("Block was generating for %d seconds\n", b.BuildTime)
-				fmt.Printf("%s\n", nState)
+			for i, transaction := range b.Transactions {
+				publicKey := b.GetPrivateKey().PublicKey
+				bytes, err := x509.MarshalPKIXPublicKey(&publicKey)
+				if err != nil {
+					log.Fatal(err)
+				}
+				fmt.Printf("Transaction #%d:\n", i+1)
+				fmt.Printf("From: %s | To: %s | Amount: %d\n",
+					transaction.FromAddress, transaction.ToAddress, transaction.Amount)
+				fmt.Printf("Signature: %s\n", b.SignTransaction(transaction))
+				fmt.Printf("Public key: %s\n", base64.StdEncoding.EncodeToString(bytes))
 			}
+			fmt.Printf("Block was generating for %d seconds\n", b.BuildTime)
+			fmt.Printf("%s\n", nState)
 
-			// Delete messages from the block
-			b.Data = nil
-			if b.ID < 5 {
-				b.GetBlockData()
-			}
+			// Ask the user to add additional transactions
+			b.GetTransactionData(bc)
 		}
 	}
-
-	//if b.ID > 1 {
-	//	b.GetBlockData()
-	//}
-	//data := strings.Join(b.Data, "\n")
-	//
-	//if b.ID == 1 {
-	//	fmt.Printf("Block data: %s\n", data)
-	//	fmt.Printf("Block was generating for %d seconds\n", b.BuildTime)
-	//	fmt.Printf("%s\n", nState)
-	//} else {
-	//	fmt.Printf("Block data:\n%s\n", data)
-	//	fmt.Printf("Block was generating for %d seconds\n", b.BuildTime)
-	//	fmt.Printf("%s\n", nState)
-	//}
 }
 
 func (b *Block) CalculateHash() string {
@@ -87,16 +83,88 @@ func (b *Block) CalculateHash() string {
 	return fmt.Sprintf("%x", sum)
 }
 
-func (b *Block) GetBlockData() {
-	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Println("Enter message to send to the blockchain:")
-	for scanner.Scan() {
-		if scanner.Text() == "" {
-			break
+type Transaction struct {
+	FromAddress string
+	FromUser    string
+
+	ToAddress string
+	ToUser    string
+
+	Amount    int
+	Signature string
+}
+
+func (b *Block) GetTransactionData(bc *Blockchain) {
+	fmt.Printf("\nEnter how many transactions you want to perform:\n")
+	var nTx int
+	fmt.Scanln(&nTx)
+
+	for i := 0; i < nTx; i++ {
+		// Ask the user the from username
+		fmt.Printf("From username:\n")
+		var fromAddress string
+		fmt.Scanln(&fromAddress)
+
+		// Ask the user the to address
+		fmt.Printf("To username:\n")
+		var toAddress string
+		fmt.Scanln(&toAddress)
+
+		// Ask the user the amount
+		fmt.Printf("VC Amount:\n")
+		var amount int
+		fmt.Scanln(&amount)
+
+		// Check if the user has enough VC in his wallet
+		if bc.GetWalletBalance(fromAddress) < amount {
+			fmt.Println("Transaction is not valid — not enough VC in wallet")
+			fmt.Println("From:", fromAddress, "To:", toAddress, "Amount:", amount)
+			fmt.Println(fromAddress, "current balance:", bc.GetWalletBalance(fromAddress))
+			continue
+		} else {
+			fmt.Println("Transaction is valid")
+			fmt.Println(fromAddress, "current balance:", bc.GetWalletBalance(fromAddress))
+			fmt.Println("From:", fromAddress, "To:", toAddress, "Amount:", amount)
+			fmt.Println(fromAddress, "remaining balance:", bc.GetWalletBalance(fromAddress)-amount)
+
+			b.Transactions = append(b.Transactions, Transaction{
+				FromAddress: fromAddress,
+				ToAddress:   toAddress,
+				Amount:      amount,
+				Signature:   b.SignTransaction(Transaction{FromAddress: fromAddress, ToAddress: toAddress, Amount: amount}),
+			})
 		}
-		b.Data = append(b.Data, scanner.Text())
 	}
 }
+
+func (b *Block) SignTransaction(transaction Transaction) string {
+	hash := sha256.Sum256([]byte(transaction.FromAddress +
+		transaction.ToAddress + fmt.Sprintf("%d", transaction.Amount)))
+
+	bytes, err := ecdsa.SignASN1(cryptoRand.Reader, b.GetPrivateKey(), hash[:])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return base64.StdEncoding.EncodeToString(bytes)
+}
+
+func (b *Block) GetPrivateKey() *ecdsa.PrivateKey {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), cryptoRand.Reader)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return privateKey
+}
+
+func (b *Block) GenerateMessageID(data string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
+}
+
+func (b *Block) AddTransactions(transactions []Transaction) {
+	b.Transactions = append(b.Transactions, transactions...)
+}
+
 func MineBlock(prevBlock *Block, prefix string, creator uint, next chan Block, done chan struct{}) {
 	start := time.Now()
 	b := Block{
@@ -132,6 +200,27 @@ func (bc *Blockchain) Init() {
 	bc.Chain = []*Block{bc.CreateGenesisBlock()}
 }
 
+func (bc *Blockchain) GetWalletBalance(address string) int {
+	balance := 100
+
+	for _, block := range bc.Chain {
+		//if len(bc.Chain) > 1 && address == block.Transactions[i].FromAddress {
+		//	balance += 100
+		//}
+
+		for _, tx := range block.Transactions {
+			if address == tx.FromAddress {
+				balance -= tx.Amount
+			}
+
+			if address == tx.ToAddress {
+				balance += tx.Amount
+			}
+		}
+	}
+	return balance
+}
+
 func (bc *Blockchain) CreateGenesisBlock() *Block {
 	timestamp := time.Now()
 	magicNumber := rand.Int31()
@@ -139,12 +228,12 @@ func (bc *Blockchain) CreateGenesisBlock() *Block {
 	hash := sha256.Sum256([]byte("Genesis block" + fmt.Sprintf("%d", magicNumber)))
 
 	return &Block{ID: 1, Hash: fmt.Sprintf("%x", hash), MagicNumber: magicNumber, Miner: uint(miner),
-		Timestamp: timestamp, PreviousHash: "0" /*Data: []string{"no messages"}*/}
+		Timestamp: timestamp, PreviousHash: "0", Transactions: []Transaction{}}
 }
 
 func PrintGenesisBlock(difficulty int, hyperCoin *Blockchain, prefix string) (int, string) {
 	difficulty++
-	hyperCoin.Chain[0].Print(fmt.Sprintf(nIncreased, difficulty))
+	hyperCoin.Chain[0].Print(hyperCoin, fmt.Sprintf(nIncreased, difficulty))
 	prefix = strings.Repeat("0", difficulty)
 	return difficulty, prefix
 }
@@ -165,10 +254,8 @@ func main() {
 		go MineBlock(hyperCoin.Chain[i], prefix, uint(creator), next, done)
 
 		newBlock := <-next
-
-		pendingMessages := hyperCoin.Chain[i].Data
-		newBlock.Data = append(newBlock.Data, pendingMessages...)
-
+		pendingTransactions := hyperCoin.Chain[i].Transactions
+		newBlock.AddTransactions(pendingTransactions)
 		close(done)
 
 		hyperCoin.Chain = append(hyperCoin.Chain, &newBlock)
@@ -186,6 +273,6 @@ func main() {
 		default:
 			nState = nStays
 		}
-		newBlock.Print(nState)
+		newBlock.Print(hyperCoin, nState)
 	}
 }

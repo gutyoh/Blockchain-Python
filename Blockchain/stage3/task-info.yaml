@@ -1,0 +1,6 @@
+type: edu
+files:
+- name: main.go
+  visible: true
+- name: tests.py
+  visible: true

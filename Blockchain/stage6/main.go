@@ -54,16 +54,13 @@ func (b *Block) Print(bc *Blockchain, nState string) {
 			fmt.Printf("No transactions\n")
 		} else {
 			for i, transaction := range b.Transactions {
-				publicKey := b.GetPrivateKey().PublicKey
-				bytes, err := x509.MarshalPKIXPublicKey(&publicKey)
-				if err != nil {
-					log.Fatal(err)
-				}
 				fmt.Printf("Transaction #%d:\n", i+1)
-				fmt.Printf("From: %s | To: %s | Amount: %d\n",
+				fmt.Printf("From: %s | To: %s | Amount: %d VC\n",
 					transaction.FromAddress, transaction.ToAddress, transaction.Amount)
-				fmt.Printf("Signature: %s\n", b.SignTransaction(transaction))
-				fmt.Printf("Public key: %s\n", base64.StdEncoding.EncodeToString(bytes))
+				// fmt.Printf("Signature: %s\n", b.SignTransaction(transaction))
+				fmt.Printf("Signature: %s\n", transaction.Signature)
+				// fmt.Printf("Public key: %s\n", base64.StdEncoding.EncodeToString(bytes))
+				fmt.Printf("Public key: %s\n", transaction.PublicKey)
 			}
 			fmt.Printf("Block was generating for %d seconds\n", b.BuildTime)
 			fmt.Printf("%s\n", nState)
@@ -92,6 +89,7 @@ type Transaction struct {
 
 	Amount    int
 	Signature string
+	PublicKey string
 }
 
 func (b *Block) GetTransactionData(bc *Blockchain) {
@@ -123,15 +121,31 @@ func (b *Block) GetTransactionData(bc *Blockchain) {
 			continue
 		} else {
 			fmt.Println("Transaction is valid")
-			fmt.Println(fromAddress, "current balance:", bc.GetWalletBalance(fromAddress))
-			fmt.Println("From:", fromAddress, "To:", toAddress, "Amount:", amount)
-			fmt.Println(fromAddress, "remaining balance:", bc.GetWalletBalance(fromAddress)-amount)
+			currentBalance := bc.GetWalletBalance(fromAddress)
+			fmt.Println(fromAddress, "current balance:", currentBalance)
+			fmt.Println("From:", fromAddress, "To:", toAddress, "Amount:", amount, "VC")
+			fmt.Println(fromAddress, "remaining balance:", currentBalance-amount)
+			fmt.Println("----------------------------------------")
+			fmt.Println(toAddress, "new balance:", bc.GetWalletBalance(toAddress)+amount)
+			fmt.Println()
+
+			// Sign the transaction
+			signature := b.SignTransaction(Transaction{FromAddress: fromAddress, ToAddress: toAddress, Amount: amount})
+
+			// Get the public key
+			publicKey := b.GetPrivateKey().PublicKey
+			bytes, err := x509.MarshalPKIXPublicKey(&publicKey)
+			if err != nil {
+				log.Fatal(err)
+			}
+			publicKeyString := base64.StdEncoding.EncodeToString(bytes)
 
 			b.Transactions = append(b.Transactions, Transaction{
 				FromAddress: fromAddress,
 				ToAddress:   toAddress,
 				Amount:      amount,
-				Signature:   b.SignTransaction(Transaction{FromAddress: fromAddress, ToAddress: toAddress, Amount: amount}),
+				Signature:   signature,
+				PublicKey:   publicKeyString,
 			})
 		}
 	}
@@ -189,6 +203,28 @@ Loop:
 	b.Timestamp = time.Now()
 	b.BuildTime = int64(time.Since(start).Seconds())
 	b.Miner = creator
+
+	// Sign the reward transaction
+	signature := b.SignTransaction(Transaction{FromAddress: "Blockchain",
+		ToAddress: fmt.Sprintf("miner #%d", creator), Amount: 100})
+
+	// Get the public key
+	publicKey := b.GetPrivateKey().PublicKey
+	bytes, err := x509.MarshalPKIXPublicKey(&publicKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	publicKeyString := base64.StdEncoding.EncodeToString(bytes)
+
+	// Create a transaction that rewards 100 VC to the miner that mined the block
+	b.Transactions = append(b.Transactions, Transaction{
+		FromAddress: "Blockchain",
+		ToAddress:   fmt.Sprintf("miner #%d", creator),
+		Amount:      100,
+		Signature:   signature,
+		PublicKey:   publicKeyString,
+	})
+
 	next <- b
 }
 
